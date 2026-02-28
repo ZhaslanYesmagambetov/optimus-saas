@@ -78,7 +78,6 @@ class PromptManager:
 
 prompt_manager = PromptManager(BASE_DIR)
 
-# ВОТ ОН - ПРОПАВШИЙ ТЕКСТ ПОМОЩИ!
 HELP_TEXT = """
 🤖 **Optimus — Многофункциональный AI-Ассистент**
 
@@ -202,7 +201,7 @@ class BotHandler:
             rows.extend([[KeyboardButton("📊 Дашборд"), KeyboardButton("🧘 Дыхание")], [KeyboardButton("❓ Помощь")]])
         return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
-    async def show_dashboard(self, update: Update, edit=False):
+    async def show_dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE = None, edit=False):
         uid = update.effective_user.id
         state = await memory_manager.state_db.get_state(uid)
         
@@ -320,9 +319,25 @@ class BotHandler:
             cnt.append(types.Content(role="user", parts=u_parts))
             
             async with llm_semaphore:
-                resp = await asyncio.wait_for(asyncio.to_thread(client.models.generate_content, model=MODEL_NAME, contents=cnt, config=types.GenerateContentConfig(temperature=dynamic_temp, system_instruction=full_prompt)), timeout=30.0)
+                # Включаем нативный выход в интернет (Google Search Grounding)
+                gen_config = types.GenerateContentConfig(
+                    temperature=dynamic_temp, 
+                    system_instruction=full_prompt,
+                    tools=[{"google_search": {}}]
+                )
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        client.models.generate_content, 
+                        model=MODEL_NAME, 
+                        contents=cnt, 
+                        config=gen_config
+                    ), 
+                    timeout=30.0
+                )
             reply = resp.text.strip()
-        except Exception: reply = "⚠️ Ошибка нейросети."
+        except Exception as e: 
+            logger.error(f"GenAI Error: {e}")
+            reply = "⚠️ Ошибка генерации ответа или поиска."
 
         await safe_send(update, reply)
         await memory_manager.process_interaction(uid, hist_skill, text, reply)
