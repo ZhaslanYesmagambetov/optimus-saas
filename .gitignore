@@ -1,0 +1,15 @@
+# Секреты и конфиги (КРИТИЧЕСКО)
+.env
+whitelist.json
+
+# Данные баз данных и Docker
+chroma_data/
+postgres_data/
+
+# Python кэш
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Системные файлы
+.DS_Store
