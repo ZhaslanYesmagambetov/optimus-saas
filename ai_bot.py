@@ -228,7 +228,7 @@ class BotHandler:
         elif q.data == "toggle_incognito":
             state = await memory_manager.state_db.get_state(uid)
             await memory_manager.state_db.update_state(uid, {"is_incognito": not state.get("is_incognito", False)})
-            await self.show_dashboard(update, edit=True)
+            await self.show_dashboard(update, context=context, edit=True)
         elif q.data == "lobotomy_confirm":
             state = await memory_manager.state_db.get_state(uid)
             await memory_manager.short_term.clear_history(uid, state.get("active_skill", "logos"))
@@ -261,7 +261,7 @@ class BotHandler:
             await memory_manager.state_db.update_state(uid, {"active_skill": "logos", "is_dialogue": 0, "bot_mode": "teacher"})
             return await update.message.reply_text("📋 Главное меню:", reply_markup=await self.get_keyboard(uid))
 
-        if raw_text == "📊 Дашборд": return await self.show_dashboard(update)
+        if raw_text == "📊 Дашборд": return await self.show_dashboard(update, context=context)
         if raw_text == "❓ Помощь": return await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
         if raw_text == "🧘 Дыхание": return await update.message.reply_text("Дыхание:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Открыть ZenBreath", web_app=WebAppInfo(url="https://zen-breath-pi.vercel.app"))]]))
 
@@ -307,7 +307,10 @@ class BotHandler:
         else:
             sys_prompt, hist_skill = prompt_manager.get_teacher_prompt(skill), skill
             mem_ctx = await memory_manager.build_context_prompt(uid, skill, text)
-            if skill in ["logos", "socrates", "albert", "neuron", "don_juan"]: should_voice = True
+            
+            # Включили озвучку для новых навыков
+            if skill in ["logos", "socrates", "albert", "neuron", "don_juan", "psychologist", "fishing", "family", "career"]: 
+                should_voice = True
 
         full_prompt = f"{sys_prompt}\n\n=== MEMORY ===\n{mem_ctx}" if mem_ctx else sys_prompt
         hist = await memory_manager.short_term.get_chat_history(uid, hist_skill, 10) if bot_mode not in ["direct", "reverse"] else []
@@ -319,7 +322,7 @@ class BotHandler:
             cnt.append(types.Content(role="user", parts=u_parts))
             
             async with llm_semaphore:
-                # Включаем нативный выход в интернет (Google Search Grounding)
+                # Включили выход в интернет (Google Search Grounding)
                 gen_config = types.GenerateContentConfig(
                     temperature=dynamic_temp, 
                     system_instruction=full_prompt,
@@ -342,73 +345,74 @@ class BotHandler:
         await safe_send(update, reply)
         await memory_manager.process_interaction(uid, hist_skill, text, reply)
 
+        # Подготовили русский голос для новых навыков
         if should_voice and len(reply) < 1000:
-            v_lang = "russian" if (bot_mode == "reverse" or skill in ["logos", "socrates", "albert", "neuron", "don_juan"]) else voice_target
+            v_lang = "russian" if (bot_mode == "reverse" or skill in ["logos", "socrates", "albert", "neuron", "don_juan", "psychologist", "fishing", "family", "career"]) else voice_target
             ab = await generate_voice_bytes(reply, VOICE_MAP.get(v_lang, VOICE_MAP["russian"]))
             if ab: 
                 stream = io.BytesIO(ab); stream.name = "response.mp3"
                 try: await update.message.reply_audio(audio=stream)
                 except Exception: pass
 
-handler = BotHandler()
+    handler = BotHandler()
 
-# --- ADMIN COMMANDS ---
-async def admin_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not whitelist.is_admin(update.effective_user.id): return
-    try:
-        tid = int(context.args[0]); whitelist.add_user(tid)
-        await update.message.reply_text(f"✅ Пользователь `{tid}` получил вечный PRO доступ.")
-    except Exception: await update.message.reply_text("Формат: /add_user 1234567")
+    # --- ADMIN COMMANDS ---
+    async def admin_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not whitelist.is_admin(update.effective_user.id): return
+        try:
+            tid = int(context.args[0]); whitelist.add_user(tid)
+            await update.message.reply_text(f"✅ Пользователь `{tid}` получил вечный PRO доступ.")
+        except Exception: await update.message.reply_text("Формат: /add_user 1234567")
 
-async def admin_del_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not whitelist.is_admin(update.effective_user.id): return
-    try:
-        tid = int(context.args[0]); whitelist.remove_user(tid)
-        await update.message.reply_text(f"🗑 PRO доступ для `{tid}` аннулирован.")
-    except Exception: await update.message.reply_text("Формат: /del_user 1234567")
+    async def admin_del_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not whitelist.is_admin(update.effective_user.id): return
+        try:
+            tid = int(context.args[0]); whitelist.remove_user(tid)
+            await update.message.reply_text(f"🗑 PRO доступ для `{tid}` аннулирован.")
+        except Exception: await update.message.reply_text("Формат: /del_user 1234567")
 
-# --- PAYMENT WEBHOOKS ---
-async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.pre_checkout_query.answer(ok=True)
+    # --- PAYMENT WEBHOOKS ---
+    async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.pre_checkout_query.answer(ok=True)
 
-async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    payment, uid = update.message.successful_payment, update.effective_user.id
-    if await memory_manager.state_db.save_payment(uid, payment.telegram_payment_charge_id, payment.total_amount):
-        new_date = datetime.now(timezone.utc) + timedelta(days=30)
-        await memory_manager.state_db.update_state(uid, {"subscription_end_date": new_date})
-        await memory_manager.state_db.reset_msg_count(uid) 
-        
-        for admin_id in ROOT_ADMINS:
-            try: await context.bot.send_message(chat_id=admin_id, text=f"💰 ДЗЫНЬ! Пользователь {uid} купил PRO за {payment.total_amount} Stars!")
-            except Exception: pass
+    async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        payment, uid = update.message.successful_payment, update.effective_user.id
+        if await memory_manager.state_db.save_payment(uid, payment.telegram_payment_charge_id, payment.total_amount):
+            new_date = datetime.now(timezone.utc) + timedelta(days=30)
+            await memory_manager.state_db.update_state(uid, {"subscription_end_date": new_date})
+            await memory_manager.state_db.reset_msg_count(uid) 
             
-        await update.message.reply_text("🎉 **Оплата прошла успешно!** Вам выдан статус PRO на 30 дней.", parse_mode="Markdown")
+            for admin_id in ROOT_ADMINS:
+                try: await context.bot.send_message(chat_id=admin_id, text=f"💰 ДЗЫНЬ! Пользователь {uid} купил PRO за {payment.total_amount} Stars!")
+                except Exception: pass
+                
+            await update.message.reply_text("🎉 **Оплата прошла успешно!** Вам выдан статус PRO на 30 дней.", parse_mode="Markdown")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    await memory_manager.state_db.update_state(uid, {"active_skill": "logos", "bot_mode": "teacher"})
-    await update.message.reply_text("🚀 Optimus SaaS Online. Выберите навык:", reply_markup=await handler.get_keyboard(uid))
+    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        uid = update.effective_user.id
+        await memory_manager.state_db.update_state(uid, {"active_skill": "logos", "bot_mode": "teacher"})
+        await update.message.reply_text("🚀 Optimus SaaS Online. Выберите навык:", reply_markup=await handler.get_keyboard(uid))
 
-async def post_init(app: Application):
-    await memory_manager.initialize()
-    await app.bot.set_my_commands([BotCommand("start", "Меню"), BotCommand("status", "Дашборд")])
-    logger.info("🚀 Optimus SaaS Online")
+    async def post_init(app: Application):
+        await memory_manager.initialize()
+        await app.bot.set_my_commands([BotCommand("start", "Меню"), BotCommand("status", "Дашборд")])
+        logger.info("🚀 Optimus SaaS Online")
 
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
-    
-    # Регистрация Планировщика (Cron)
-    jq = app.job_queue
-    jq.run_daily(cron_weekly_english, time=dt_time(hour=19, minute=0, tzinfo=TZ_ASTANA), days=(6,)) # Воскресенье 19:00
-    jq.run_daily(cron_weekly_kazakh, time=dt_time(hour=19, minute=0, tzinfo=TZ_ASTANA), days=(6,))  # Воскресенье 19:00
-    jq.run_daily(cron_daily_ping, time=dt_time(hour=12, minute=0, tzinfo=TZ_ASTANA)) # Каждый день 12:00
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", handler.show_dashboard))
-    app.add_handler(CommandHandler("add_user", admin_add_user))
-    app.add_handler(CommandHandler("del_user", admin_del_user))
-    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
-    app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO, handler.route_message))
-    app.add_handler(CallbackQueryHandler(handler.handle_callback))
-    app.run_polling()
+    if __name__ == '__main__':
+        app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+        
+        # Регистрация Планировщика (Cron)
+        jq = app.job_queue
+        jq.run_daily(cron_weekly_english, time=dt_time(hour=19, minute=0, tzinfo=TZ_ASTANA), days=(6,)) # Воскресенье 19:00
+        jq.run_daily(cron_weekly_kazakh, time=dt_time(hour=19, minute=0, tzinfo=TZ_ASTANA), days=(6,))  # Воскресенье 19:00
+        jq.run_daily(cron_daily_ping, time=dt_time(hour=12, minute=0, tzinfo=TZ_ASTANA)) # Каждый день 12:00
+        
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("status", handler.show_dashboard))
+        app.add_handler(CommandHandler("add_user", admin_add_user))
+        app.add_handler(CommandHandler("del_user", admin_del_user))
+        app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+        app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
+        app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO, handler.route_message))
+        app.add_handler(CallbackQueryHandler(handler.handle_callback))
+        app.run_polling()
