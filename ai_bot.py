@@ -57,7 +57,28 @@ SKILL_MAPPING = {
     "bobby": "💼 Бобби", "don_juan": "🌵 Дон Хуан"
 }
 UI_TO_SKILL = {v: k for k, v in SKILL_MAPPING.items()}
-VOICE_MAP = {"kazakh": "kk-KZ-DauletNeural", "english": "en-US-ChristopherNeural", "russian": "ru-RU-DmitryNeural"}
+
+# КАРТА ГОЛОСОВ (АЗУР)
+VOICE_MAP = {
+    "kazakh": "kk-KZ-DauletNeural", 
+    "english": "en-US-ChristopherNeural", 
+    "russian_male": "ru-RU-DmitryNeural",
+    "russian_female": "ru-RU-SvetlanaNeural",
+    "russian_soft": "ru-RU-DariyaNeural"
+}
+
+# ПРИВЯЗКА НАВЫКОВ К КОНКРЕТНЫМ ГОЛОСАМ
+SKILL_VOICES = {
+    "psychologist": VOICE_MAP["russian_female"],
+    "fishing": VOICE_MAP["russian_male"],
+    "family": VOICE_MAP["russian_soft"],
+    "career": VOICE_MAP["russian_male"],
+    "logos": VOICE_MAP["russian_male"],
+    "socrates": VOICE_MAP["russian_male"],
+    "albert": VOICE_MAP["russian_male"],
+    "neuron": VOICE_MAP["russian_soft"],
+    "don_juan": VOICE_MAP["russian_male"]
+}
 
 class PromptManager:
     def __init__(self, base_dir: Path):
@@ -309,7 +330,7 @@ class BotHandler:
             mem_ctx = await memory_manager.build_context_prompt(uid, skill, text)
             
             # Включили озвучку для новых навыков
-            if skill in ["logos", "socrates", "albert", "neuron", "don_juan", "psychologist", "fishing", "family", "career"]: 
+            if skill in SKILL_VOICES:
                 should_voice = True
 
         full_prompt = f"{sys_prompt}\n\n=== MEMORY ===\n{mem_ctx}" if mem_ctx else sys_prompt
@@ -345,74 +366,76 @@ class BotHandler:
         await safe_send(update, reply)
         await memory_manager.process_interaction(uid, hist_skill, text, reply)
 
-        # Подготовили русский голос для новых навыков
-        if should_voice and len(reply) < 1000:
-            v_lang = "russian" if (bot_mode == "reverse" or skill in ["logos", "socrates", "albert", "neuron", "don_juan", "psychologist", "fishing", "family", "career"]) else voice_target
-            ab = await generate_voice_bytes(reply, VOICE_MAP.get(v_lang, VOICE_MAP["russian"]))
+        # Озвучка с VIP проверкой и выбором голоса
+        if should_voice and (len(reply) < 1000 or whitelist.is_admin(uid)):
+            target_voice = SKILL_VOICES.get(skill, VOICE_MAP.get(voice_target, VOICE_MAP["russian_male"]))
+            ab = await generate_voice_bytes(reply, target_voice)
             if ab: 
                 stream = io.BytesIO(ab); stream.name = "response.mp3"
                 try: await update.message.reply_audio(audio=stream)
-                except Exception: pass
+                except Exception as e: logger.error(f"Telegram Audio Send Error: {e}")
+            else:
+                logger.error(f"Azure TTS failed to generate audio for skill: {skill}")
 
-    handler = BotHandler()
+handler = BotHandler()
 
-    # --- ADMIN COMMANDS ---
-    async def admin_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not whitelist.is_admin(update.effective_user.id): return
-        try:
-            tid = int(context.args[0]); whitelist.add_user(tid)
-            await update.message.reply_text(f"✅ Пользователь `{tid}` получил вечный PRO доступ.")
-        except Exception: await update.message.reply_text("Формат: /add_user 1234567")
+# --- ADMIN COMMANDS ---
+async def admin_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not whitelist.is_admin(update.effective_user.id): return
+    try:
+        tid = int(context.args[0]); whitelist.add_user(tid)
+        await update.message.reply_text(f"✅ Пользователь `{tid}` получил вечный PRO доступ.")
+    except Exception: await update.message.reply_text("Формат: /add_user 1234567")
 
-    async def admin_del_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not whitelist.is_admin(update.effective_user.id): return
-        try:
-            tid = int(context.args[0]); whitelist.remove_user(tid)
-            await update.message.reply_text(f"🗑 PRO доступ для `{tid}` аннулирован.")
-        except Exception: await update.message.reply_text("Формат: /del_user 1234567")
+async def admin_del_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not whitelist.is_admin(update.effective_user.id): return
+    try:
+        tid = int(context.args[0]); whitelist.remove_user(tid)
+        await update.message.reply_text(f"🗑 PRO доступ для `{tid}` аннулирован.")
+    except Exception: await update.message.reply_text("Формат: /del_user 1234567")
 
-    # --- PAYMENT WEBHOOKS ---
-    async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.pre_checkout_query.answer(ok=True)
+# --- PAYMENT WEBHOOKS ---
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.pre_checkout_query.answer(ok=True)
 
-    async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        payment, uid = update.message.successful_payment, update.effective_user.id
-        if await memory_manager.state_db.save_payment(uid, payment.telegram_payment_charge_id, payment.total_amount):
-            new_date = datetime.now(timezone.utc) + timedelta(days=30)
-            await memory_manager.state_db.update_state(uid, {"subscription_end_date": new_date})
-            await memory_manager.state_db.reset_msg_count(uid) 
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment, uid = update.message.successful_payment, update.effective_user.id
+    if await memory_manager.state_db.save_payment(uid, payment.telegram_payment_charge_id, payment.total_amount):
+        new_date = datetime.now(timezone.utc) + timedelta(days=30)
+        await memory_manager.state_db.update_state(uid, {"subscription_end_date": new_date})
+        await memory_manager.state_db.reset_msg_count(uid) 
+        
+        for admin_id in ROOT_ADMINS:
+            try: await context.bot.send_message(chat_id=admin_id, text=f"💰 ДЗЫНЬ! Пользователь {uid} купил PRO за {payment.total_amount} Stars!")
+            except Exception: pass
             
-            for admin_id in ROOT_ADMINS:
-                try: await context.bot.send_message(chat_id=admin_id, text=f"💰 ДЗЫНЬ! Пользователь {uid} купил PRO за {payment.total_amount} Stars!")
-                except Exception: pass
-                
-            await update.message.reply_text("🎉 **Оплата прошла успешно!** Вам выдан статус PRO на 30 дней.", parse_mode="Markdown")
+        await update.message.reply_text("🎉 **Оплата прошла успешно!** Вам выдан статус PRO на 30 дней.", parse_mode="Markdown")
 
-    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
-        await memory_manager.state_db.update_state(uid, {"active_skill": "logos", "bot_mode": "teacher"})
-        await update.message.reply_text("🚀 Optimus SaaS Online. Выберите навык:", reply_markup=await handler.get_keyboard(uid))
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    await memory_manager.state_db.update_state(uid, {"active_skill": "logos", "bot_mode": "teacher"})
+    await update.message.reply_text("🚀 Optimus SaaS Online. Выберите навык:", reply_markup=await handler.get_keyboard(uid))
 
-    async def post_init(app: Application):
-        await memory_manager.initialize()
-        await app.bot.set_my_commands([BotCommand("start", "Меню"), BotCommand("status", "Дашборд")])
-        logger.info("🚀 Optimus SaaS Online")
+async def post_init(app: Application):
+    await memory_manager.initialize()
+    await app.bot.set_my_commands([BotCommand("start", "Меню"), BotCommand("status", "Дашборд")])
+    logger.info("🚀 Optimus SaaS Online")
 
-    if __name__ == '__main__':
-        app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
-        
-        # Регистрация Планировщика (Cron)
-        jq = app.job_queue
-        jq.run_daily(cron_weekly_english, time=dt_time(hour=19, minute=0, tzinfo=TZ_ASTANA), days=(6,)) # Воскресенье 19:00
-        jq.run_daily(cron_weekly_kazakh, time=dt_time(hour=19, minute=0, tzinfo=TZ_ASTANA), days=(6,))  # Воскресенье 19:00
-        jq.run_daily(cron_daily_ping, time=dt_time(hour=12, minute=0, tzinfo=TZ_ASTANA)) # Каждый день 12:00
-        
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("status", handler.show_dashboard))
-        app.add_handler(CommandHandler("add_user", admin_add_user))
-        app.add_handler(CommandHandler("del_user", admin_del_user))
-        app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
-        app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
-        app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO, handler.route_message))
-        app.add_handler(CallbackQueryHandler(handler.handle_callback))
-        app.run_polling()
+if __name__ == '__main__':
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    
+    # Регистрация Планировщика (Cron)
+    jq = app.job_queue
+    jq.run_daily(cron_weekly_english, time=dt_time(hour=19, minute=0, tzinfo=TZ_ASTANA), days=(6,)) # Воскресенье 19:00
+    jq.run_daily(cron_weekly_kazakh, time=dt_time(hour=19, minute=0, tzinfo=TZ_ASTANA), days=(6,))  # Воскресенье 19:00
+    jq.run_daily(cron_daily_ping, time=dt_time(hour=12, minute=0, tzinfo=TZ_ASTANA)) # Каждый день 12:00
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", handler.show_dashboard))
+    app.add_handler(CommandHandler("add_user", admin_add_user))
+    app.add_handler(CommandHandler("del_user", admin_del_user))
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
+    app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO, handler.route_message))
+    app.add_handler(CallbackQueryHandler(handler.handle_callback))
+    app.run_polling()
