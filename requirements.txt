@@ -7,3 +7,5 @@ azure-cognitiveservices-speech==1.42.0
 aiofiles
 python-dotenv
 cachetools==5.3.0
+docx2txt
+openpyxl

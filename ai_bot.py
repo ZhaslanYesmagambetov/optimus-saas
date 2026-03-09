@@ -43,7 +43,7 @@ logger = logging.getLogger("OptimusSaaS")
 
 client = genai.Client(api_key=GOOGLE_API_KEY)
 memory_manager = MemoryManager(BASE_DIR)
-MODEL_NAME = "gemini-2.0-flash" 
+MODEL_NAME = "gemini-2.0-flash"
 llm_semaphore = asyncio.Semaphore(20)
 user_rate_limit = TTLCache(maxsize=10000, ttl=1.5) 
 
@@ -60,8 +60,9 @@ UI_TO_SKILL = {v: k for k, v in SKILL_MAPPING.items()}
 
 # КАРТА ГОЛОСОВ (АЗУР)
 VOICE_MAP = {
-    "kazakh": "kk-KZ-DauletNeural", 
+    "kazakh": "kk-KZ-DauletNeural",
     "english": "en-US-ChristopherNeural", 
+    "russian": "ru-RU-DmitryNeural",
     "russian_male": "ru-RU-DmitryNeural",
     "russian_female": "ru-RU-SvetlanaNeural",
     "russian_soft": "ru-RU-DariyaNeural"
@@ -194,8 +195,18 @@ async def generate_voice_bytes(text: str, voice: str) -> Optional[bytes]:
             cfg = speechsdk.SpeechConfig(subscription=AZURE_SPEECH_KEY, region=AZURE_SPEECH_REGION)
             cfg.speech_synthesis_voice_name = voice
             cfg.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3)
-            res = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=None).speak_text_async(clean_text).get()
-            return res.audio_data if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted else None
+            cfg.set_property(speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, "30000")
+            synthesizer = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=None)
+            if "kk-KZ" in voice:
+                ssml = f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="kk-KZ"><voice name="{voice}">{clean_text}</voice></speak>'
+                res = synthesizer.speak_ssml_async(ssml).get()
+            else:
+                res = synthesizer.speak_text_async(clean_text).get()
+            if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+                return res.audio_data
+            else:
+                logger.error(f"Ошибка Azure TTS: {res.reason}")
+                return None
         return await asyncio.to_thread(_tts)
     except Exception: return None
 
@@ -204,7 +215,24 @@ async def safe_send(update: Update, text: str, use_markdown: bool = True):
     for i in range(0, len(text), MAX):
         chunk = text[i:i+MAX]
         try: await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN if use_markdown else None)
-        except Exception: await update.message.reply_text(chunk) 
+        except Exception: await update.message.reply_text(chunk)
+
+async def transcribe_audio_secure(file_id: str, context: ContextTypes.DEFAULT_TYPE, uid: int) -> str:
+    try:
+        file = await context.bot.get_file(file_id)
+        if not whitelist.is_admin(uid) and file.file_size and file.file_size > 10 * 1024 * 1024:
+            return "⛔️ Голосовое сообщение слишком большое (максимум 10 МБ)."
+        byte_stream = io.BytesIO()
+        await file.download_to_memory(out=byte_stream)
+        audio_bytes = byte_stream.getvalue()
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, lambda: client.models.generate_content(
+            model=MODEL_NAME, contents=[types.Content(role="user", parts=[
+                types.Part.from_text(text="Transcribe verbatim. Use ONLY Cyrillic script. Russian=Cyrillic, Kazakh=Cyrillic with special letters (Ә,Ғ,Қ,Ң,Ө,Ұ,Ү,Һ,І). NEVER use Latin transliteration."),
+                types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg")])]))
+        return response.text
+    except Exception:
+        return "[Аудио не распознано]"
 
 class BotHandler:
     async def get_keyboard(self, uid: int) -> ReplyKeyboardMarkup:
@@ -213,12 +241,26 @@ class BotHandler:
         if state.get("is_dialogue") or bot_mode == "dialogue": return ReplyKeyboardMarkup([[KeyboardButton("🔴 Выйти из диалога")]], resize_keyboard=True)
         rows = []
         if skill in ["english", "kazakh"]:
-            lang = "EN" if skill == "english" else "KZ"
-            rows.extend([[KeyboardButton(f"🇷🇺➡️{lang} RU->{lang}"), KeyboardButton(f"{lang}➡️🇷🇺 {lang}->RU")], [KeyboardButton("🎙 Режим диалога"), KeyboardButton("◀️ Назад в меню")]])
+            if skill == "english":
+                rows.extend([
+                    [KeyboardButton("🇷🇺➡️🇬🇧 RU->EN"), KeyboardButton("🇬🇧➡️🇷🇺 EN->RU")],
+                    [KeyboardButton("🎙 Режим диалога"), KeyboardButton("◀️ Назад в меню")]
+                ])
+            else:  # kazakh
+                rows.extend([
+                    [KeyboardButton("🇷🇺➡️🇰🇿 RU->KZ"), KeyboardButton("🇰🇿➡️🇷🇺 KZ->RU")],
+                    [KeyboardButton("🎙 Режим диалога"), KeyboardButton("◀️ Назад в меню")]
+                ])
         else:
             keys = list(SKILL_MAPPING.keys())
-            for i in range(0, len(keys), 2):
-                rows.append([KeyboardButton(SKILL_MAPPING[keys[i]]), KeyboardButton(SKILL_MAPPING[keys[i+1]])] if i+1 < len(keys) else [KeyboardButton(SKILL_MAPPING[keys[i]])])
+            row = []
+            for key in keys:
+                row.append(KeyboardButton(SKILL_MAPPING[key]))
+                if len(row) == 3:
+                    rows.append(row)
+                    row = []
+            if row:
+                rows.append(row)
             rows.extend([[KeyboardButton("📊 Дашборд"), KeyboardButton("🧘 Дыхание")], [KeyboardButton("❓ Помощь")]])
         return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
@@ -294,42 +336,90 @@ class BotHandler:
         if raw_text == "🔴 Выйти из диалога":
             await memory_manager.state_db.update_state(uid, {"is_dialogue": 0, "bot_mode": "teacher"})
             return await update.message.reply_text("🔇 Режим диалога завершен.", reply_markup=await self.get_keyboard(uid))
-        if "RU->" in raw_text:
-            await memory_manager.state_db.update_state(uid, {"active_skill": "english" if "EN" in raw_text else "kazakh", "is_dialogue": 0, "bot_mode": "direct"})
-            return await update.message.reply_text("🤐 **Переводчик активирован!**")
-        if "->RU" in raw_text:
-            await memory_manager.state_db.update_state(uid, {"active_skill": "english" if "EN" in raw_text else "kazakh", "is_dialogue": 0, "bot_mode": "reverse"})
-            return await update.message.reply_text("🤐 **Переводчик на русский активирован!**")
+        if raw_text == "🇷🇺➡️🇬🇧 RU->EN":
+            await memory_manager.state_db.update_state(uid, {"active_skill": "english", "is_dialogue": 0, "bot_mode": "direct"})
+            return await update.message.reply_text("🤐 **Переводчик (RU → EN) активирован!**\nТеперь все ваши сообщения будут переводиться и озвучиваться голосом.")
+        if raw_text == "🇬🇧➡️🇷🇺 EN->RU":
+            await memory_manager.state_db.update_state(uid, {"active_skill": "english", "is_dialogue": 0, "bot_mode": "reverse"})
+            return await update.message.reply_text("🤐 **Переводчик (EN → RU) активирован!**\nТеперь все ваши сообщения будут переводиться и озвучиваться голосом.")
+        if raw_text == "🇷🇺➡️🇰🇿 RU->KZ":
+            await memory_manager.state_db.update_state(uid, {"active_skill": "kazakh", "is_dialogue": 0, "bot_mode": "direct"})
+            return await update.message.reply_text("🤐 **Переводчик (RU → KZ) активирован!**\nТеперь все ваши сообщения будут переводиться и озвучиваться голосом.")
+        if raw_text == "🇰🇿➡️🇷🇺 KZ->RU":
+            await memory_manager.state_db.update_state(uid, {"active_skill": "kazakh", "is_dialogue": 0, "bot_mode": "reverse"})
+            return await update.message.reply_text("🤐 **Переводчик (KZ → RU) активирован!**\nТеперь все ваши сообщения будут переводиться и озвучиваться голосом.")
         if raw_text == "🎙 Режим диалога":
             await memory_manager.state_db.update_state(uid, {"is_dialogue": 1, "bot_mode": "dialogue"})
             return await update.message.reply_text("🎙 **Диалог активирован!**", reply_markup=await self.get_keyboard(uid))
 
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        is_vip = whitelist.is_admin(uid)
         text, photo_bytes = update.message.text or "", None
+
+        # Лимит на длину текста для не-админов
+        if not is_vip and len(text) > 4000:
+            await update.message.reply_text("⚠️ Текст обрезан до 4000 символов.")
+            text = text[:4000]
+
         if update.message.voice:
-            try:
-                f = await context.bot.get_file(update.message.voice.file_id); b = io.BytesIO(); await f.download_to_memory(out=b)
-                resp = await asyncio.to_thread(client.models.generate_content, model=MODEL_NAME, contents=[types.Content(role="user", parts=[types.Part.from_text(text="Transcribe verbatim."), types.Part.from_bytes(data=b.getvalue(), mime_type="audio/ogg")])])
-                text = resp.text
-                await update.message.reply_text(f"🎤 Вы сказали: {text}")
-            except Exception: return
+            text = await transcribe_audio_secure(update.message.voice.file_id, context, uid)
+            if text.startswith("⛔️"):
+                return await update.message.reply_text(text)
+            await update.message.reply_text(f"🎤 Вы сказали: {text}")
         elif update.message.photo:
-            f = await update.message.photo[-1].get_file(); b = io.BytesIO(); await f.download_to_memory(out=b)
+            photo = update.message.photo[-1]
+            if not is_vip and photo.file_size and photo.file_size > 10 * 1024 * 1024:
+                return await update.message.reply_text("⛔️ Фото слишком большое (максимум 10 МБ).")
+            f = await photo.get_file(); b = io.BytesIO(); await f.download_to_memory(out=b)
             photo_bytes, text = b.getvalue(), update.message.caption or "Analyze image."
+        elif update.message.document:
+            doc = update.message.document
+            if not is_vip and doc.file_size and doc.file_size > 20 * 1024 * 1024:
+                return await update.message.reply_text("⛔️ Файл слишком большой (максимум 20 МБ).")
+            mime = doc.mime_type or ""
+            f = await context.bot.get_file(doc.file_id); b = io.BytesIO(); await f.download_to_memory(out=b)
+            file_bytes = b.getvalue()
+            await update.message.reply_text(f"📄 Получил файл: {doc.file_name}. Анализирую...")
+            if "pdf" in mime:
+                resp = await asyncio.to_thread(client.models.generate_content, model=MODEL_NAME, contents=[types.Content(role="user", parts=[types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"), types.Part.from_text(text=update.message.caption or "Проанализируй этот документ и расскажи о чём он.")])])
+                text = resp.text
+            elif "officedocument.wordprocessingml" in mime:
+                import docx2txt
+                text_extracted = await asyncio.to_thread(docx2txt.process, io.BytesIO(file_bytes))
+                text = f"Содержимое документа:\n{text_extracted[:8000]}\n\n{update.message.caption or 'Проанализируй этот документ.'}"
+            elif "spreadsheet" in mime or "excel" in mime:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(file_bytes))
+                ws = wb.active
+                rows = [" | ".join([str(c) for c in row if c is not None]) for row in ws.iter_rows(max_row=50, values_only=True)]
+                text = f"Данные таблицы:\n{chr(10).join(rows)}\n\n{update.message.caption or 'Проанализируй эти данные.'}"
+            elif "text" in mime:
+                text = file_bytes.decode("utf-8", errors="ignore")[:8000]
+                text = f"Содержимое файла:\n{text}\n\n{update.message.caption or 'Проанализируй этот текст.'}"
+            else:
+                return await update.message.reply_text("❌ Формат не поддерживается. Поддерживаю: PDF, Word, Excel, TXT.")
 
         if not text and not photo_bytes: return
 
         skill, bot_mode = state.get("active_skill", "logos"), state.get("bot_mode", "teacher")
         should_voice, voice_target, hist_skill, mem_ctx, dynamic_temp = False, skill, skill, "", 0.5
 
-        if bot_mode == "direct": sys_prompt, should_voice, hist_skill, dynamic_temp = prompt_manager.get_translator_prompt(skill), True, f"{skill}_translator", 0.1
-        elif bot_mode == "reverse": sys_prompt, should_voice, voice_target, hist_skill, dynamic_temp = prompt_manager.get_translator_prompt("russian"), True, "russian", f"{skill}_translator", 0.1
-        elif state.get("is_dialogue") or bot_mode == "dialogue": sys_prompt, should_voice, hist_skill, dynamic_temp = prompt_manager.get_dialogue_prompt(skill), True, f"{skill}_dialogue", 0.8
+        use_google_search = False
+
+        if bot_mode == "direct":
+            sys_prompt = prompt_manager.get_translator_prompt(skill)
+            should_voice, voice_target, hist_skill, dynamic_temp = True, skill, f"{skill}_translator", 0.1
+            use_google_search = False
+        elif bot_mode == "reverse":
+            sys_prompt = prompt_manager.get_translator_prompt("russian")
+            should_voice, voice_target, hist_skill, dynamic_temp = True, "russian", f"{skill}_translator", 0.1
+            use_google_search = False
+        elif state.get("is_dialogue") or bot_mode == "dialogue":
+            sys_prompt, should_voice, hist_skill, dynamic_temp = prompt_manager.get_dialogue_prompt(skill), True, f"{skill}_dialogue", 0.8
         else:
             sys_prompt, hist_skill = prompt_manager.get_teacher_prompt(skill), skill
             mem_ctx = await memory_manager.build_context_prompt(uid, skill, text)
-            
-            # Включили озвучку для новых навыков
+            use_google_search = True
             if skill in SKILL_VOICES:
                 should_voice = True
 
@@ -343,11 +433,11 @@ class BotHandler:
             cnt.append(types.Content(role="user", parts=u_parts))
             
             async with llm_semaphore:
-                # Включили выход в интернет (Google Search Grounding)
+                search_tool = [types.Tool(google_search=types.GoogleSearch())] if use_google_search else None
                 gen_config = types.GenerateContentConfig(
                     temperature=dynamic_temp, 
                     system_instruction=full_prompt,
-                    tools=[{"google_search": {}}]
+                    tools=search_tool
                 )
                 resp = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -436,6 +526,6 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("del_user", admin_del_user))
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
-    app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO, handler.route_message))
+    app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO | filters.Document.ALL, handler.route_message))
     app.add_handler(CallbackQueryHandler(handler.handle_callback))
     app.run_polling()
