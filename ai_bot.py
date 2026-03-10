@@ -337,16 +337,16 @@ class BotHandler:
             await memory_manager.state_db.update_state(uid, {"is_dialogue": 0, "bot_mode": "teacher"})
             return await update.message.reply_text("🔇 Режим диалога завершен.", reply_markup=await self.get_keyboard(uid))
         if raw_text == "🇷🇺➡️🇬🇧 RU->EN":
-            await memory_manager.state_db.update_state(uid, {"active_skill": "english", "is_dialogue": 0, "bot_mode": "direct"})
+            await memory_manager.state_db.update_state(uid, {"active_skill": "english", "is_dialogue": 0, "bot_mode": "to_english"})
             return await update.message.reply_text("🤐 **Переводчик (RU → EN) активирован!**\nТеперь все ваши сообщения будут переводиться и озвучиваться голосом.")
         if raw_text == "🇬🇧➡️🇷🇺 EN->RU":
-            await memory_manager.state_db.update_state(uid, {"active_skill": "english", "is_dialogue": 0, "bot_mode": "reverse"})
+            await memory_manager.state_db.update_state(uid, {"active_skill": "english", "is_dialogue": 0, "bot_mode": "to_russian"})
             return await update.message.reply_text("🤐 **Переводчик (EN → RU) активирован!**\nТеперь все ваши сообщения будут переводиться и озвучиваться голосом.")
         if raw_text == "🇷🇺➡️🇰🇿 RU->KZ":
-            await memory_manager.state_db.update_state(uid, {"active_skill": "kazakh", "is_dialogue": 0, "bot_mode": "direct"})
+            await memory_manager.state_db.update_state(uid, {"active_skill": "kazakh", "is_dialogue": 0, "bot_mode": "to_kazakh"})
             return await update.message.reply_text("🤐 **Переводчик (RU → KZ) активирован!**\nТеперь все ваши сообщения будут переводиться и озвучиваться голосом.")
         if raw_text == "🇰🇿➡️🇷🇺 KZ->RU":
-            await memory_manager.state_db.update_state(uid, {"active_skill": "kazakh", "is_dialogue": 0, "bot_mode": "reverse"})
+            await memory_manager.state_db.update_state(uid, {"active_skill": "kazakh", "is_dialogue": 0, "bot_mode": "to_russian"})
             return await update.message.reply_text("🤐 **Переводчик (KZ → RU) активирован!**\nТеперь все ваши сообщения будут переводиться и озвучиваться голосом.")
         if raw_text == "🎙 Режим диалога":
             await memory_manager.state_db.update_state(uid, {"is_dialogue": 1, "bot_mode": "dialogue"})
@@ -406,13 +406,11 @@ class BotHandler:
 
         use_google_search = False
 
-        if bot_mode == "direct":
-            sys_prompt = prompt_manager.get_translator_prompt(skill)
-            should_voice, voice_target, hist_skill, dynamic_temp = True, skill, f"{skill}_translator", 0.1
-            use_google_search = False
-        elif bot_mode == "reverse":
-            sys_prompt = prompt_manager.get_translator_prompt("russian")
-            should_voice, voice_target, hist_skill, dynamic_temp = True, "russian", f"{skill}_translator", 0.1
+        if bot_mode in ("to_russian", "to_english", "to_kazakh"):
+            target = "russian" if bot_mode == "to_russian" else ("english" if bot_mode == "to_english" else "kazakh")
+            sys_prompt = prompt_manager.get_translator_prompt(target)
+            voice_lang = "russian" if bot_mode == "to_russian" else ("english" if bot_mode == "to_english" else "kazakh")
+            should_voice, voice_target, hist_skill, dynamic_temp = True, voice_lang, f"{skill}_translator", 0.1
             use_google_search = False
         elif state.get("is_dialogue") or bot_mode == "dialogue":
             sys_prompt, should_voice, hist_skill, dynamic_temp = prompt_manager.get_dialogue_prompt(skill), True, f"{skill}_dialogue", 0.8
@@ -424,7 +422,7 @@ class BotHandler:
                 should_voice = True
 
         full_prompt = f"{sys_prompt}\n\n=== MEMORY ===\n{mem_ctx}" if mem_ctx else sys_prompt
-        hist = await memory_manager.short_term.get_chat_history(uid, hist_skill, 10) if bot_mode not in ["direct", "reverse"] else []
+        hist = await memory_manager.short_term.get_chat_history(uid, hist_skill, 10) if bot_mode not in ["to_russian", "to_english", "to_kazakh"] else []
         
         try:
             cnt = [types.Content(role="model" if m["role"]=="assistant" else "user", parts=[types.Part.from_text(text=m["content"])]) for m in hist]
