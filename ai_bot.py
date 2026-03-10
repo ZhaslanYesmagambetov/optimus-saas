@@ -261,7 +261,7 @@ class BotHandler:
                     row = []
             if row:
                 rows.append(row)
-            rows.extend([[KeyboardButton("📊 Дашборд"), KeyboardButton("🧘 Дыхание")], [KeyboardButton("❓ Помощь")]])
+            rows.extend([[KeyboardButton("📊 Дашборд"), KeyboardButton("🧘 Дыхание"), KeyboardButton("❄️ Вим Хоф")], [KeyboardButton("❓ Помощь")]])
         return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
     async def show_dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE = None, edit=False):
@@ -327,6 +327,7 @@ class BotHandler:
         if raw_text == "📊 Дашборд": return await self.show_dashboard(update, context=context)
         if raw_text == "❓ Помощь": return await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
         if raw_text == "🧘 Дыхание": return await update.message.reply_text("Дыхание:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Открыть ZenBreath", web_app=WebAppInfo(url="https://zen-breath-pi.vercel.app"))]]))
+        if raw_text == "❄️ Вим Хоф": return await update.message.reply_text("❄️ Метод Вима Хофа:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Открыть WimHof", web_app=WebAppInfo(url="https://wim-hof-flax.vercel.app/"))]]))
 
         clicked_skill = UI_TO_SKILL.get(raw_text)
         if clicked_skill:
