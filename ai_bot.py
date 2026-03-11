@@ -50,8 +50,8 @@ user_rate_limit = TTLCache(maxsize=10000, ttl=1.5)
 SKILL_MAPPING = {
     "english": "🇬🇧 Английский", "kazakh": "🇰🇿 Казахский", "python": "🐍 Python", "sysadmin": "💻 Сисадмин",
     "network": "🌐 Сети (Cisco)", "fitness": "💪 Фитнес", "nutrition": "🥗 Нутрициолог", "health_consultant": "🏥 Мед. Консультант",
-    "psychologist": "🧠 Психолог", "career": "💼 Карьера", "finance": "💵 Финансы", "payroll": "💸 Кадры/Зарплата",
-    "accountant": "💰 Бухгалтер", "lawyer": "⚖️ Юрист", "marketing": "📈 Маркетинг", "fishing": "🎣 Рыбалка",
+    "psychologist": "🧠 Психолог", "career": "💼 Карьера", "finance": "💵 Финансы", "payroll": "💸 Бухгалтер-расчётчик",
+    "accountant": "💰 Главный бухгалтер", "lawyer": "⚖️ Юрист", "marketing": "📈 Маркетинг", "fishing": "🎣 Рыбалка",
     "math": "🧮 Математика", "study_helper": "🎓 Учеба", "travel": "✈️ Путешествия", "family": "👨‍👩‍👧 Семья",
     "logos": "🏛 Логос", "socrates": "🤔 Сократ", "albert": "🔬 Альберт", "neuron": "🤖 Нейрон",
     "bobby": "💼 Бобби", "don_juan": "🌵 Дон Хуан"
