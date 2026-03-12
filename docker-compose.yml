@@ -11,7 +11,7 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - ./chroma_data:/app/chroma_data
+      - ./chroma_db:/app/chroma_db
       - ./prompts:/app/prompts
       - ./whitelist.json:/app/whitelist.json
     logging:

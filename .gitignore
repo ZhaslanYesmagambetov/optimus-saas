@@ -13,3 +13,9 @@ __pycache__/
 
 # Системные файлы
 .DS_Store
+backups/
+chroma_db/
+*.bak
+backups/
+chroma_db/
+*.bak
